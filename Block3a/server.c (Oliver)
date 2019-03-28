@@ -1,0 +1,347 @@
+#define _POSIX_C_SOURCE 200112L
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <stdint.h>         // Unsigned Int 8
+#include "uthash.h"			// Hash-Table
+
+#define LISTEN_BACKLOG 10	// Amount of clients 'listen' can handle waiting at once
+#define HEADER_LEN 6		// Length of header in bytes
+
+// struct : tuple inside the hashtable
+typedef struct hashtable_element {
+    char *key;
+    char *value;
+    UT_hash_handle hh;  // makes this structure hashable
+}hashtable_element;
+
+
+// ________________________________________  FUNCTIONS START  ________________________________________
+
+
+// get a key, a value string and the hashtable_head-> add the tuple in the hashtable, return -1 on failure
+int hashtable_set (char *key, char *value, hashtable_element *head) {
+    struct hashtable_element *ptr = NULL;
+
+    // check if the key already exists
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr != NULL) {
+        perror("Hashtable: Element already exists");
+        return -1;
+    }
+    // create new tuple
+    ptr = (hashtable_element * ) malloc(sizeof *ptr);
+    ptr->key = malloc((strlen(key)+1) * sizeof(char));
+    strcpy(ptr->key, key);
+    ptr->value = malloc((strlen(value)+1) * sizeof(char));
+    strcpy(ptr->value, value);
+    HASH_ADD_KEYPTR( hh, head, ptr->key, strlen(ptr->key)+1, ptr); // insert 'ptr' in hashtable pointed to by 'head'
+    return 0;
+}
+
+
+
+// get a key and the hashtable_head -> return related value or NULL
+char *hashtable_get (char *key, hashtable_element *head) {
+    struct hashtable_element *ptr = NULL;
+
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr == NULL) {
+        return NULL;
+    } else {
+        return ptr->value;
+    }
+}
+
+
+
+// get a key and the hashtable_head -> delete the related tuple in hashtable or return -1
+int hashtable_delete (char *key, hashtable_element *head) {
+    struct hashtable_element *ptr = NULL;
+
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr == NULL) {
+        return -1;
+    } else {
+        HASH_DEL(head, ptr);
+        free(ptr->key);
+        free(ptr->value);
+        free(ptr);
+        return 0;
+    }
+}
+
+
+// print all entries in hashtable
+void hashtable_print(hashtable_element *head) {
+    struct hashtable_element *ptr;
+
+    printf("hashtable_print:\n");	// #DEBUG
+    for (ptr = head ; ptr != NULL; ptr = (struct hashtable_element*)(ptr->hh.next)) {
+        printf("movie id %s: name %s\n", ptr->key, ptr->value);
+    }
+}
+
+
+
+// get a byte amount, an socket id and a pointer to a storage -> store the amount of bytes from 'recv' into the storage, return -1 on failure
+int receive (int recv_amount, int socket, uint8_t *storage) {   
+	int bytes_recv = 0;
+    int bytes_recv_all = 0;		
+    printf("  \nReceive Amount: %d\n  ", recv_amount);	// #DEBUG				
+// loop : receive the full amount of bytes
+    while(bytes_recv_all < recv_amount) {
+        if((bytes_recv = recv(socket, &storage[bytes_recv_all], 1, 0)) == -1) {
+        	perror("Receive failed -1");
+        	close(socket);
+        	return -1;
+        } else if (bytes_recv == 0) {
+        	continue;
+        } else {
+        	printf("|  %d  ", storage[bytes_recv_all]);	// #DEBUG
+        	bytes_recv_all += bytes_recv;	// count bytes received in 'bytes_recv_all'
+            bytes_recv = 0;                 // redundant for safety
+	
+        }
+    }
+    printf("|\n"); // #DEBUG
+    return 0;
+}
+
+// #ERROR : STORAGE TYPE (UNSIGNED INT / CHAR), probably not though
+int send_bytes (int send_amount, int socket, uint8_t *storage) {
+    int bytes_send = 0;
+    int bytes_send_all = 0;
+// loop : send the full amount of bytes
+    while(bytes_send_all < send_amount) {
+        if((bytes_send = send(socket, storage, (send_amount- bytes_send_all), 0)) == -1) {
+            perror("Send failed");
+            close (socket);
+            return -1;
+        } else if (bytes_send == 0) {
+            perror("Send failed");
+            close (socket);
+            return -1;
+        } else {
+            bytes_send_all += bytes_send;   // count bytes send in 'bytes_send_all'
+            bytes_send = 0;                 // redundant for safety
+        }
+    }
+    return 0;
+}
+
+// ________________________________________  MAIN START  ________________________________________
+
+
+int main(int argc, char *argv[]) {
+
+    struct addrinfo hints, *my_addr, *ptr;	            // internet_adresses of server
+    struct sockaddr_storage client_addr;                // internet_addr of client
+    int addrlen = sizeof(client_addr);					// used in 'accept'
+    int setsockopt_flag = 1;							// used in 'setsockopt'		
+    int sock_listen, sock_client;						// socket identificators
+    char *value_buffer, *key_buffer;					// storage array for key and value
+    char *value_answer_ptr;                          // storage array for value on return
+    uint8_t	header[6], flag;				            // storage arrays for header and key, 'flag' to indicate the request-type
+    uint16_t key_len, value_len;						// length of key and value
+    hashtable_element *head = NULL;                     // pointer to the whole hashtable    
+
+
+// errorcheck : argument count
+    if (argc != 2) {
+        fprintf(stderr,"(port)\n");
+        return 1;
+    }
+
+
+// ________________________________________  PROGRAM START  ________________________________________
+
+printf("start Server\n"); // #DEBUG
+fflush(stdout);
+
+// set flags in 'hints'
+    memset(&hints, 0, sizeof (hints));
+    hints.ai_family = AF_UNSPEC; 
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+// execute 'getaddrinfo' -> fill in 'server_address' addrinfo using adress, portno., 'hints'  
+    if ((getaddrinfo(NULL, argv[1], &hints, &my_addr)) != 0) {
+        perror("Getaddrinfo failed");
+        return 1;
+    }
+
+// loop : create a socket
+    for (ptr = my_addr; ptr != NULL; ptr = ptr->ai_next) {
+    // execute 'socket' -> create socket 'sock_listen'
+    	if ((sock_listen = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol)) == -1) {
+    		perror("Socket failed");
+    		continue;
+    	} 
+    	my_addr = ptr;
+    	break;
+    }
+
+// execute 'setsockopt'	-> clean socket in case it has been used before
+    if (setsockopt(sock_listen, SOL_SOCKET, SO_REUSEADDR, &setsockopt_flag, sizeof(int)) == -1) {
+        perror("Setsockopt failed");
+        close(sock_listen);
+        exit(1);
+    }
+
+// execute 'bind' -> assign 'sock_listen' the port from 'my_addr'
+   	if(bind(sock_listen, my_addr->ai_addr, my_addr->ai_addrlen) == -1) {
+	   	perror("Binding failed");
+	   	close(sock_listen);
+	   	exit(1);
+	}
+
+// execute 'listen' -> start listening for clients to connect
+    if (listen(sock_listen, LISTEN_BACKLOG) == -1) 
+	{
+    	perror("Listen failed");
+    	close(sock_listen);
+    	exit(1);
+	}
+  
+
+// ________________________________________  INFINITE LOOP START  ________________________________________
+
+
+// infinite loop : Try to accept a client. If successful, answer all requests of the client until he closes the connection.
+	while(1) {
+
+		printf("\nAnswer Request\n\n"); // #DEBUG
+	// execute 'accept' -> create 'sock_client' or return -1
+	    if((sock_client = accept(sock_listen, (struct sockaddr * )&client_addr, (socklen_t * )&addrlen)) == -1) {
+	    	perror("Accept failed");
+	    	continue;
+	    }
+
+	// receive full header in 'header'
+	    if(receive(6, sock_client, header) == -1) {
+            perror("Receive_Header failed");
+
+            break;
+        }
+
+	// interpret the header
+	    flag = header[0] & 7;				                          // execute 'or' operation bitwise on bit 1, 2 & 3 of 'header[0]' to check the type of request
+	    key_len = (uint16_t) header[3] + ((uint16_t)header[2] << 8);  // calculate 'key_len' 
+	    key_buffer = malloc(key_len+1);							      // reserve storage for 'key_buffer'
+	    value_len = (uint16_t) header[5] + ((uint16_t)header[4] << 8);// calculate 'value_len'
+    	value_buffer = malloc(value_len+1);						      // reserve storage for 'value_buffer'
+
+    // receive full key in 'key_buffer', add \0 at the end
+    	if(receive(key_len, sock_client, key_buffer) == -1) {
+            perror("Receive_Key failed");
+            break;
+        }
+        key_buffer[key_len] = '\0';
+
+    // receive full value in 'value_buffer', add \0 at the end
+    	if(receive(value_len, sock_client, value_buffer) == -1) {
+            perror("Receive_Value failed");
+            break;
+        }
+    	value_buffer[value_len] = '\0';
+
+
+// ________________________________________  HASHTABLE OPERATION START  ________________________________________
+
+
+    // execute DELETE operation
+        if (flag == 1) {
+            if(hashtable_delete(key_buffer, head) == 0) { 
+                header[0] = header[0] | 8;                  // Success : set acknoledgement bit
+            }
+            key_len = 0;                                    // no key to return
+            value_len = 0;                                  // no value to return, redundant for safety
+            header[2] = 0;
+            header[3] = 0; 
+            header[4] = 0; 
+            header[5] = 0; 
+        }
+
+    // execute SET operation
+        else if (flag == 2) {
+            if(hashtable_set(key_buffer, value_buffer, head) == 0) {
+                header[0] = header[0] | 8;                              // Success : set acknoledgement bit
+            }
+            key_len = 0;                                                // no key to return
+            value_len = 0;                                              // no value to return
+            header[2] = 0;
+            header[3] = 0; 
+            header[4] = 0; 
+            header[5] = 0; 
+        }
+
+    // execute GET
+        else if (flag == 4) {
+            if((value_answer_ptr = hashtable_get(key_buffer, head)) != NULL) {
+            // Success
+                header[0] = header[0] | 8;                  // set acknoledgement bit
+                value_len = strlen(value_answer_ptr);    // set 'value_len' to lenght of new value string
+                header[4] = (uint8_t)((value_len & 0xFF00) >> 8);   // set MSB part of Value lenght in header   #ERROR: order?
+                header[5] = (uint8_t)(value_len & 0x00FF);          // set LSB part of Value lenght in header
+            } else {
+                key_len = 0;                                // no key to return
+                value_len = 0;                              // no value to return
+                header[2] = 0;
+                header[3] = 0; 
+                header[4] = 0; 
+                header[5] = 0; 
+            }
+        }
+
+    // no flag was set
+        else {
+            perror("Flag was not found");
+            break;
+        }
+
+
+// ________________________________________  RETURN START  ________________________________________
+
+        hashtable_print(head); // #DEBUG
+
+    // execute 'send_bytes' -> send header to client
+        if(send_bytes(6, sock_client, header) == -1) {
+            perror("Send_Header failed");
+            break;
+        }
+
+    // execute 'send_bytes' -> send old key and new value to client
+        if(flag == 4 && value_len != 0) {
+            if(send_bytes(key_len, sock_client, key_buffer) == -1) {    // send old key 
+                perror("Send_Key failed");
+                break;
+            }
+            if(send_bytes(value_len, sock_client, key_buffer) == -1) {  // send looked-up value
+                perror("Send_Value failed");
+                break;
+            }
+        }
+
+    // free all data-storages used for this request
+        free(key_buffer);
+        free(value_buffer);
+
+
+	}
+    // #ERROR: missing frees?
+// free all data-storages used in this programm
+	close(sock_client);
+	close(sock_listen);			// close 'sock_listen'
+	freeaddrinfo(my_addr);		// free 'my_addr'
+
+    return 0;
+} 

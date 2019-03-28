@@ -1,0 +1,224 @@
+#define _POSIX_C_SOURCE 200112L
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <time.h>
+
+#define HEADER_SIZE 6
+ 
+void getMovieRequest(int their_addr_id, char *argv[], uint8_t header[], int header_size){
+  //setup Header
+  header[0] = header[0] | 4;  // 4 setzen für get
+  int b_send = 0;
+  // Send Header
+  b_send = send_header(their_addr_id, header, header_size);
+  // Send Key
+  b_send = send_bytes(their_addr_id, argv[4], strlen(argv[4]));
+
+  return 0;
+}
+
+void deleteMovie(int their_addr_id, char *argv[], uint8_t header[], int header_size){
+  //setup Header
+  header[0] = header[0] | 1;  // 1 setzen für delete
+  int b_send = 0;
+  // Send Header
+  b_send = send_header(their_addr_id, header, header_size);
+  // Send Key
+  b_send = send_bytes(their_addr_id, argv[4], strlen(argv[4]));
+
+  return 0;
+}
+
+
+void setMovie(int their_addr_id, char *argv[], uint8_t header[], int header_size){
+  //setup Header
+  header[0] = header[0] | 2;  // 1 setzen für delete
+  int b_send = 0;
+  // Send Header
+  b_send = send_header(their_addr_id, header, header_size);
+
+  // Send Key
+  b_send = send_bytes(their_addr_id, argv[4], strlen(argv[4]));
+
+  //Send Value
+  b_send = send_bytes(their_addr_id, argv[5], strlen(argv[5]));
+
+  return 0;
+}
+
+
+
+
+
+//Sendet Header Byteweise
+int send_header(int their_addr_id, uint8_t header[], int header_size){
+  int b send = 0;
+      for (int i = 0; i < header_size; ++i)
+      { 
+        // Sende einzeln jedes Element des header Arrays zurück
+       if((b_send = send(their_addr_id, &header[i] , 1, 0))==-1){
+            perror("Sending of header Failed");
+            close(their_addr_id);
+            exit(1);
+          }   
+      }
+      return b_send;
+
+}
+
+int receive_header(int their_addr_id,uint8_t header_ans[], int header_size){
+     //  Empfange den Header in uint8 header Array
+  int bytes_recv_total = 0;
+      while(bytes_recv_total < header_size) {
+          if((bytes_recv = recv(their_addr_id, &header_ans[bytes_recv_total], 1, 0)) == -1) {
+            perror("Receive failed");
+            exit(1);
+          } else if (bytes_recv == 0) {
+            perror("Receive failed");
+            exit(1);
+          } else {
+            bytes_recv_total += bytes_recv; // count amount of bytes received in this while-loop in 'bytes_recv_total'
+          }
+  return bytes_recv_total;        
+}
+
+int send_bytes(int their_addr_id, char *key, int key_len ){
+  int b_send = 0;
+  if((b_send = send(their_addr_id, key, key_len, 0))==-1){
+            perror("Sending Failed");
+            close(their_addr_id);
+            exit(1);
+          }
+  return b_send;
+ }
+
+
+
+
+
+int main(int argc, char *argv[]) {
+
+
+    struct addrinfo hints, *res;
+    int status, sockfd;
+
+    if (argc > 5) {
+      fprintf(stderr,"usage: \n");
+      return 1;
+    }
+
+
+    memset(&hints, 0, sizeof (struct addrinfo));
+    hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version
+    hints.ai_socktype = SOCK_STREAM | SOCK_NONBLOCK;    // SOCK_NONBLOCK for asynchronous stream
+
+    if ((status = getaddrinfo(argv[1], argv[2], &hints, &res)) != 0) {
+      fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+      return 1;
+    }
+
+
+
+    if((sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol))== -1)
+    {
+      perror("Socket");
+      exit(1);
+    }
+
+    if(connect(sockfd, res->ai_addr, res->ai_addrlen) ==-1)
+   {
+   	  perror("connect failed");
+   	  close(sockfd);
+   	  exit(1);
+   }
+      free(res);
+
+
+
+
+
+  // initialize header and fill with input data
+  uint8_t header[HEADER_SIZE] = {0};
+  header[1] = (rand()%255); // TRANSAKTIONSID Zufällig modulo 255 wegen uint8 Größe
+  header[2] =(uint8_t)((strlen(argv[4]) >> 8);  //MSB KEY_LEN
+  header[3]= (uint8_t) (strlen(argv[4]);        //LSB KEY_LEN
+
+  if (argv[5]){
+    header[4] = (uint8_t)((strlen(argv[5]))>> 8);  //MSB VALUE_LEN
+    header[5] = (uint8_t) (strlen(argv[5]));      // LSB VALUE_LEN
+  }
+  // HEADER AND um antwort vom header zu speichern ( überschreiben geht nicht?)
+  uint8_t header_ans[HEADER_SIZE]= {0};
+  // Für empfangen von Header , Total für empfangen von VALUE
+  int bytes_recv = 0, bytes_recv_total = 0;
+
+  ///////// PROBLEMMMMMMM!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  while((bytes_recv == 0 || timer != abgelaufen SELECT checken){
+
+    switch(argv[3]){
+      case "DELETE": //declare we want to delete data
+        deleteMovie(sockfd, argv[], header[], HEADER_SIZE);
+        break;
+      case "SET": // declare we want to SET
+        setMovie(sockfd, argv[], header[], HEADER_SIZE);     
+        break;
+      case "GET": // Declare we wantto get!
+        getMovieRequest(sockfd, argv[], header[], HEADER_SIZE);
+        break; 
+                     //declare we want to get data
+      default:
+        perror("Default");
+        exit(1);
+    }
+    sleep(0,10); // Wartekurz auf Antwort
+    //setTimer();
+
+    // receive Header receivt entweder den kompletten header oder garnichts bei verbindungs abbruch exit
+    bytes_recv = receive_header(sockfd,header_ans[],HEADER_SIZE);
+  }
+
+  if(strcmp(argv[3], "GET") == 0){
+        // GET SIZE OF VALUE
+        uint16_t value_len = ((uint16_t) header_ans[5]) | ((uint16_t) header_ans[4] << 8);
+        value_buffer = malloc(value_len+ 1);  // reserve storage for 'value_buffer'
+
+        // RECEIVE BUFFER Byte für Byte
+        
+          while(bytes_recv_total < value_len) {
+                if((bytes_recv = recv(their_addr_id, &value_buffer[bytes_recv_total], 1, 0)) == -1) {
+                  perror("Receive failed");
+                  continue;
+                } else if (bytes_recv == 0) {
+                  perror("Receive failed");
+                  continue;
+                } else {
+                  bytes_recv_total += bytes_recv; // count amount of bytes received in this hile-loop in 'bytes_recv_total'
+               }
+          } 
+            //Setze Nulltermination für value
+              value_buffer[value_len] = '\0';
+              printf("%s\n",value_buffer);
+  }
+
+
+
+
+
+
+
+
+	close(sockfd);
+
+    return 0;
+}
+
+

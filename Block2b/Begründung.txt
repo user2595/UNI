@@ -1,0 +1,6 @@
+Der Datenaustausch via UDP ist deutlich schneller, da auf den Aufbau 
+einer sicheren Datenverbindung verzichten werden kann. 
+Somit sendet der Server zum einen sofort beim ersten Kontakt mit dem 
+Client (empfangenes DGram) die finale Antwort, zum anderen können UDP 
+Verbindungen für jedes Paket immer den schnellsten Verbindungsweg wählen 
+und müssen sich nicht an einen vorangelegten Pfad halten.

@@ -1,0 +1,54 @@
+#define BIND 1;
+#define CONNECT 0;
+
+
+int socket(char* ipv4_addr, char * portnummer, int flag_Socktype){
+    int set_socked_flag = 1; // Bel Wert > 0
+    int sockfd;
+    struct addrinfo hints, *res, *p;
+        // Hints vorbereiten,
+    memset(&hints, 0, sizeof (hints));
+    hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version
+    hints.ai_socktype = SOCK_STREAM;
+
+    if(flag_Socktype == BIND) {
+    	hints.ai_flags = AI_PASSIVE;//I'm telling the program to bind to the IP of the host it's running on.
+    }
+
+    if ((status = getaddrinfo(ipv4_addr, portnummer, &hints, &res)) != 0) {
+    	perror("getaddrinfo failed");
+    	return -1;
+    }
+// Iteriert durch Addrinfo Linked List
+    for (p = res; p != NULL; p = p->ai_next) {
+        if((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol))== -1) {
+            perror("Socket");
+            continue;
+    	}
+    }
+// Resetet socket falls local Address schon in benutzung
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &set_socked_flag,sizeof(int)) == -1) {
+        perror("setsockopt");
+        return -1;
+    }
+
+    if(flag_Socktype == BIND) {
+	    if(bind(sockfd, p->ai_addr, p->ai_addrlen)==-1){
+	        perror("binding failed maybe port too low?  ");
+	        close(sockfd);
+	        return -1;
+	    }
+    } else if(flag_Socktype == CONNECT) {
+    // execute 'connect' -> assign 'sockfd' the server ip_address stored in 'server_address->ai_addr'
+	    if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+	        perror("Connect failed\n");
+	        close(sockfd);
+	        return -1;
+	    }
+    }
+
+
+    
+   freeaddrinfo(res);
+   return sockfd;
+}

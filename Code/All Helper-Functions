@@ -1,0 +1,277 @@
+#define _POSIX_C_SOURCE 200112L
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <stdint.h>         // Unsigned Int 8
+#include "uthash.h"         // Hash-Table
+
+#define LISTEN_BACKLOG 20   // Amount of clients 'listen' can handle waiting at once
+#define DELETE 1
+#define SET 2
+#define GET 4
+#define BIND 0
+#define CONNECT 1
+
+
+// struct : tuple inside the hashtable
+typedef struct hashtable_element {
+    char *key;
+    char *value;
+    UT_hash_handle hh;  // makes this structure hashable
+}hashtable_element;
+
+hashtable_element *head = NULL;      // pointer to the whole hashtable    
+
+
+
+// __________________________________________________  HASHTABLE FUNCTIONS  __________________________________________________
+
+
+
+// get a key, a value string and the hashtable_head-> add the tuple in the hashtable, return -1 on failure
+int hashtable_set (char *key, char *value) {
+    struct hashtable_element *ptr = NULL;
+    int key_len = strlen(key);
+    int value_len = strlen(value);
+
+
+    printf("hashtable_set key: %s value: %s\n key_len: %d value_len: %d\n", key, value, key_len, value_len);   // #DEBUG
+    // check if the key already exists
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr != NULL) {
+        perror("Hashtable: Element already exists");
+        return -1;
+    }
+
+    // create new tuple
+    ptr = (hashtable_element * ) malloc(sizeof (hashtable_element));
+    ptr->key = malloc((key_len + 1) * sizeof(char));
+    strcpy(ptr->key, key);
+    ptr->value = malloc((value_len + 1) * sizeof(char));
+    strcpy(ptr->value, value);
+    printf("hashtable_set_POINTER key: %s value: %s\n", ptr->key, ptr->value);   // #DEBUG
+    HASH_ADD_KEYPTR( hh, head, ptr->key, key_len, ptr); // insert 'ptr' in hashtable pointed to by 'head'
+    return 0;
+}
+
+
+
+// get a key and the hashtable_head -> return related value or NULL
+char *hashtable_get (char *key) {
+    struct hashtable_element *ptr = NULL;
+
+    printf("hashtable_get: key: %s\n", key);   // #DEBUG
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr == NULL) {
+        printf("not found\n"); // #DEBUG
+        return NULL;
+    } else {
+        printf("found\n"); // #DEBUG
+        return ptr->value;
+    }
+}
+
+
+
+// get a key and the hashtable_head -> delete the related tuple in hashtable or return -1
+int hashtable_delete (char *key) {
+    struct hashtable_element *ptr = NULL;
+
+    printf("hashtable_delete:\n");   // #DEBUG
+    HASH_FIND_STR(head, key, ptr);
+    if (ptr == NULL) {
+        return -1;
+    } else {
+        HASH_DEL(head, ptr);
+        free(ptr->key);
+        free(ptr->value);
+        free(ptr);
+        return 0;
+    }
+}
+
+
+// print all entries in hashtable
+void hashtable_print() {
+    struct hashtable_element *ptr;
+
+    printf("hashtable_print:\n");   // #DEBUG
+    for (ptr = head ; ptr != NULL; ptr = (struct hashtable_element*)(ptr->hh.next)) {
+        printf("  print: %s - %s\n", ptr->key, ptr->value);
+    }
+}
+
+
+
+// __________________________________________________  SEND/RECEIVE FUNCTIONS  __________________________________________________
+
+
+
+int create_socket(char* ipv4_addr, char * portnummer, int flag_socktype){
+    int set_socked_flag = 1; // Bel Wert > 0
+    int sockfd;
+    struct addrinfo hints, *res, *p;
+        // Hints vorbereiten,
+    memset(&hints, 0, sizeof (hints));
+    hints.ai_family = AF_UNSPEC; // AF_INET or AF_INET6 to force version
+    hints.ai_socktype = SOCK_STREAM;
+
+    if(flag_socktype == BIND) {
+        hints.ai_flags = AI_PASSIVE;//I'm telling the program to bind to the IP of the host it's running on.
+    }
+
+    if ((status = getaddrinfo(ipv4_addr, portnummer, &hints, &res)) != 0) {
+        perror("getaddrinfo failed");
+        return -1;
+    }
+// Iteriert durch Addrinfo Linked List
+    for (p = res; p != NULL; p = p->ai_next) {
+        if((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol))== -1) {
+            perror("Socket");
+            continue;
+        }
+    }
+// Resetet socket falls local Address schon in benutzung
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &set_socked_flag,sizeof(int)) == -1) {
+        perror("setsockopt");
+        return -1;
+    }
+
+    if(flag_socktype == BIND) {
+    // execute 'bind' -> assign 'sockfd' the servers own ip_address stored in 'server_address->ai_addr'
+        if(bind(sockfd, p->ai_addr, p->ai_addrlen)==-1){
+            perror("binding failed maybe port too low?  ");
+            close(sockfd);
+            return -1;
+        }
+    } else if(flag_socktype == CONNECT) {
+    // execute 'connect' -> assign 'sockfd' the server ip_address stored in 'server_address->ai_addr'
+        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+            perror("Connect failed\n");
+            close(sockfd);
+            return -1;
+        }
+    }
+   freeaddrinfo(res);
+   return sockfd;
+}
+
+
+// get a byte amount, an socket id and a pointer to a storage -> store the amount of bytes from 'recv' into the storage, return -1 on failure
+int receive_bytes (int recv_amount, int socket, uint8_t *storage) {   
+    int bytes_recv = 0;
+    int bytes_recv_all = 0;     
+    printf("  \nReceive Amount: %d\n  ", recv_amount);  // #DEBUG               
+// loop : receive the full amount of bytes
+    while(bytes_recv_all < recv_amount) {
+        if((bytes_recv = recv(socket, &storage[bytes_recv_all], 1, 0)) == -1) {
+            perror("Receive failed -1");
+            close(socket);
+            return -1;
+        } else if (bytes_recv == 0) {
+            continue;
+        } else {
+            printf("|  %d  ", storage[bytes_recv_all]); // #DEBUG
+            bytes_recv_all += bytes_recv;   // count bytes received in 'bytes_recv_all'
+            bytes_recv = 0;                 // redundant for safety
+    
+        }
+    }
+    printf("|\n"); // #DEBUG
+    return 0;
+}
+
+
+// get a byte amount, an socket id and a pointer to a storage -> send the amount of bytes via the socket to the connected device, return -1 on failure
+int send_bytes (int send_amount, int socket, uint8_t *storage) {
+    int bytes_send = 0;
+    int bytes_send_all = 0;
+// loop : send the full amount of bytes
+    while(bytes_send_all < send_amount) {
+        if((bytes_send = send(socket, storage, (send_amount- bytes_send_all), 0)) == -1) {
+            perror("Send failed");
+            close (socket);
+            return -1;
+        } else if (bytes_send == 0) {
+            perror("Send failed");
+            close (socket);
+            return -1;
+        } else {
+            bytes_send_all += bytes_send;   // count bytes send in 'bytes_send_all'
+            bytes_send = 0;                 // redundant for safety
+        }
+    }
+    return 0;
+}
+
+
+
+// __________________________________________________  OTHER FUNCTIONS  __________________________________________________
+
+
+int str_to_ip (char* string, uint8_t *storage) {
+    char* token;
+
+    token = strtok(string, '.');
+
+    for(int i = 0; i < 4; i++) {
+        storage[i] = (uint8_t) strtol(token, (char **)NULL, 10);
+        if (storage[i] == 0) {
+            perror("Corrupted Str for IP\n");
+            return -1
+        }
+        token = strtok(NULL, '.');
+    }
+    return 0;
+
+}
+
+
+
+// __________________________________________________  MAIN FUNCTION  __________________________________________________
+
+
+
+int main(int argc, char *argv[]) {
+
+    struct addrinfo hints, *my_addr, *ptr;              // internet_adresses of server
+    struct sockaddr_storage client_addr;                // internet_addr of client
+    int addrlen = sizeof(client_addr);                  // used in 'accept'
+    int setsockopt_flag = 1;                            // used in 'setsockopt'     
+    int sock_listen, sock_client;                       // socket identificators
+    char *value_buffer, *key_buffer;                    // storage array for key and value
+    char *value_answer_ptr;                             // storage array for value on return
+    uint8_t header[6], header_new[7];                   // storage arrays for 'header_old' and 'header_new'
+    uint8_t our_ip[4]; 
+    uint8_t flag, flag_intern;                          // 'flag' to indicate the request-type, 'flag_intern' to check if request is from client or peer
+    uint16_t key_len, value_len;                        // length of key and value
+
+
+
+
+// errorcheck : argument count
+    if (argc != 10) {
+        perror("Wrong Usage: Our ID, Our IP, Our Port_no, Predecessor ID, Predecessor IP, Predecessor Port_no, Successor ID, Successor IP, Successor Port_no");
+        return -1;
+    }
+
+    str_to_ip(argv[2], &our_ip);
+
+
+
+
+
+// ________________________________________  CREATE LISTENER  ________________________________________
+
+
+
+    return 0;
+} 
